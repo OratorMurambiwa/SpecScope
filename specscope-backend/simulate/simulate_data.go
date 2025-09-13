@@ -1,15 +1,12 @@
-package main
+package simulate
 
 import (
-	"encoding/json"
-	"fmt"
 	"math"
 	"math/rand"
-	"os"
-	"strconv"
 	"time"
 )
 
+// SpectrumReading represents one signal sample
 type SpectrumReading struct {
 	Timestamp      time.Time `json:"timestamp"`
 	Frequency      float64   `json:"frequency"`       // in MHz
@@ -19,10 +16,11 @@ type SpectrumReading struct {
 	Hour           int       `json:"hour"`            // extracted from timestamp
 	TimePeriod     string    `json:"time_period"`     // morning, afternoon, evening, night
 	WifiProximity  int       `json:"wifi_proximity"`  // 1 if near Wi-Fi band
-	Interference   bool      `json:"interference"`    // optional, default false
-	Confidence     float64   `json:"confidence"`      // optional, ML confidence
+	Interference   bool      `json:"interference"`    // (optional) default false
+	Confidence     float64   `json:"confidence"`      // (optional) ML confidence
 }
 
+// getTimePeriod returns a label for part of day
 func getTimePeriod(hour int) string {
 	switch {
 	case hour >= 6 && hour < 12:
@@ -36,6 +34,7 @@ func getTimePeriod(hour int) string {
 	}
 }
 
+// GenerateSimulatedData creates spectrum readings with derived fields
 func GenerateSimulatedData(samples int, startFreq, endFreq float64) []SpectrumReading {
 	readings := make([]SpectrumReading, samples)
 	now := time.Now()
@@ -45,10 +44,12 @@ func GenerateSimulatedData(samples int, startFreq, endFreq float64) []SpectrumRe
 		freq := startFreq + float64(i)*freqStep
 		t := float64(i) / 10.0
 
-		lat := 37.02 + rand.Float64()*0.05
+		lat := 37.02 + rand.Float64()*0.05 // tighter range (SF-like area)
 		lon := -121.93 + rand.Float64()*0.05
 
+		// Simulated power value
 		var power float64
+
 		switch {
 		case freq >= 88 && freq <= 108:
 			power = 35 + rand.Float64()*5
@@ -72,15 +73,6 @@ func GenerateSimulatedData(samples int, startFreq, endFreq float64) []SpectrumRe
 			power = -50 + 10*math.Sin(0.1*t) + rand.Float64()*10
 		}
 
-		// Force interference every 50 samples
-		interference := false
-		confidence := 0.0
-		if i%50 == 0 {
-			interference = true
-			confidence = 0.9 + rand.Float64()*0.1 // 0.9 - 1.0
-			power = 60 + rand.Float64()*10        // Boost power
-		}
-
 		timestamp := now.Add(time.Duration(i) * time.Millisecond)
 		hour := timestamp.Hour()
 		timePeriod := getTimePeriod(hour)
@@ -98,42 +90,31 @@ func GenerateSimulatedData(samples int, startFreq, endFreq float64) []SpectrumRe
 			Hour:          hour,
 			TimePeriod:    timePeriod,
 			WifiProximity: wifiProximity,
-			Interference:  interference,
-			Confidence:    confidence,
+			Interference:  false,  // updated by ML or detection logic
+			Confidence:    0.0,    // updated by ML
 		}
 	}
 
 	return readings
 }
 
-func main() {
-	if len(os.Args) != 3 {
-		fmt.Println("Usage: go run simulate.go <output_file.json> <num_samples>")
-		return
+// DetectInterference still works as your rule-based fallback
+func DetectInterference(data []SpectrumReading, powerThreshold float64, proximityMHz float64) []SpectrumReading {
+	var result []SpectrumReading
+
+	for i := 0; i < len(data)-1; i++ {
+		a := data[i]
+		b := data[i+1]
+
+		if a.Power > powerThreshold {
+			result = append(result, a)
+			continue
+		}
+
+		if math.Abs(a.Frequency-b.Frequency) < proximityMHz && math.Abs(a.Power-b.Power) > 10 {
+			result = append(result, a)
+		}
 	}
 
-	filename := os.Args[1]
-	numSamples, err := strconv.Atoi(os.Args[2])
-	if err != nil || numSamples <= 0 {
-		fmt.Println("Invalid number of samples:", os.Args[2])
-		return
-	}
-
-	data := GenerateSimulatedData(numSamples, 400.0, 2500.0)
-
-	file, err := os.Create(filename)
-	if err != nil {
-		fmt.Println("Failed to create file:", err)
-		return
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(data); err != nil {
-		fmt.Println("Failed to write JSON:", err)
-		return
-	}
-
-	fmt.Printf("✅ Simulated %d spectrum readings written to %s\n", numSamples, filename)
+	return result
 }
